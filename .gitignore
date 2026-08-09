@@ -39,3 +39,11 @@ data/
 
 # Local build plan doc (not tracked)
 docs/BUILD_PLAN.md
+
+# Compiled binaries from this repo
+/queued
+/loadgen
+/bin/
+
+# Crash-test scratch output
+.crashtest/
