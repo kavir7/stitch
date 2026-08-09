@@ -16,3 +16,8 @@ vet:
 
 clean:
 	rm -rf bin data .crashtest
+
+.PHONY: crash-test
+
+crash-test:
+	bash scripts/crash_test.sh
