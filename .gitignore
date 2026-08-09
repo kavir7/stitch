@@ -30,3 +30,12 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Data
+data/
+
+# Logs
+*.log
+
+# Local build plan doc (not tracked)
+docs/BUILD_PLAN.md
