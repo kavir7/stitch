@@ -232,76 +232,77 @@ func TestSegmentRotation(t *testing.T) {
 	}
 }
 
-// Group commit must fold concurrent appends into one fsync window rather than
-// serialising them. Five appends issued together should cost roughly one
-// window, not five.
-func TestGroupCommitBatchesConcurrentAppends(t *testing.T) {
-	dir := t.TempDir()
-	opts := testOptions(dir, SyncGroup)
-	opts.BatchWindow = 100 * time.Millisecond
+// Under concurrency the writer must fold the records that queue up behind an
+// in-flight fsync into the next batch, so fsyncs come out well below appends.
+func TestGroupCommitBatchesUnderConcurrency(t *testing.T) {
+	const n = 256
 
-	l, _, err := Open(opts, nil)
+	dir := t.TempDir()
+	l, _, err := Open(testOptions(dir, SyncGroup), nil)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer l.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := l.Append(RecordEnqueue, []byte(fmt.Sprintf("concurrent-%03d", i))); err != nil {
+				t.Errorf("append: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	st := l.Stats()
+	if st.Appends != n {
+		t.Fatalf("counted %d appends, issued %d", st.Appends, n)
+	}
+	if st.Batches >= n {
+		t.Fatalf("%d appends cost %d fsyncs; nothing was grouped", n, st.Batches)
+	}
+	t.Logf("%d appends in %d fsyncs (%.1f records per sync)", st.Appends, st.Batches, float64(st.Appends)/float64(st.Batches))
+}
+
+// An idle writer must not wait for company. Sequential appends in group mode
+// have to cost the same as fsync=always, one sync each and no added delay.
+// This is the regression test for the fixed batch window that used to make
+// group commit slower than fsync=always for a single producer.
+func TestGroupCommitDoesNotDelayIdleWriter(t *testing.T) {
+	const n = 20
+
+	always := timeSequentialAppends(t, SyncAlways, n)
+	group := timeSequentialAppends(t, SyncGroup, n)
+	t.Logf("sequential %d appends: always=%v group=%v", n, always, group)
+
+	if group > always*2 {
+		t.Fatalf("group commit took %v for %d sequential appends against %v for fsync=always; the writer is waiting for a batch that will never arrive", group, n, always)
+	}
+}
+
+func timeSequentialAppends(t *testing.T, mode SyncMode, n int) time.Duration {
+	t.Helper()
+	dir := t.TempDir()
+	l, _, err := Open(testOptions(dir, mode), nil)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
 	defer l.Close()
 
 	start := time.Now()
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			if err := l.Append(RecordEnqueue, []byte{byte(i)}); err != nil {
-				t.Errorf("append: %v", err)
-			}
-		}(i)
+	for i := 0; i < n; i++ {
+		if err := l.Append(RecordEnqueue, []byte(fmt.Sprintf("seq-%03d", i))); err != nil {
+			t.Fatalf("append: %v", err)
+		}
 	}
-	wg.Wait()
 	elapsed := time.Since(start)
 
-	if elapsed < opts.BatchWindow {
-		t.Fatalf("batch committed in %v, before the %v window closed", elapsed, opts.BatchWindow)
+	if st := l.Stats(); st.Batches != uint64(n) {
+		t.Fatalf("%s: %d sequential appends produced %d fsyncs, want one each", mode, n, st.Batches)
 	}
-	if elapsed > 3*opts.BatchWindow {
-		t.Fatalf("five concurrent appends took %v, which is more than one batch window; they were not grouped", elapsed)
-	}
-}
-
-// BatchMax closes a batch early, so a full batch must not wait out the window.
-func TestGroupCommitFlushesAtBatchMax(t *testing.T) {
-	dir := t.TempDir()
-	opts := testOptions(dir, SyncGroup)
-	opts.BatchWindow = 5 * time.Second
-	opts.BatchMax = 4
-
-	l, _, err := Open(opts, nil)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer l.Close()
-
-	done := make(chan struct{})
-	go func() {
-		var wg sync.WaitGroup
-		for i := 0; i < 4; i++ {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				if err := l.Append(RecordEnqueue, []byte{byte(i)}); err != nil {
-					t.Errorf("append: %v", err)
-				}
-			}(i)
-		}
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("a full batch waited for the window instead of flushing at BatchMax")
-	}
+	return elapsed
 }
 
 func TestAppendAfterCloseFails(t *testing.T) {

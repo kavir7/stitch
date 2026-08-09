@@ -11,7 +11,7 @@ import (
 	"log"
 	"os"
 	"sync"
-	"time"
+	"sync/atomic"
 )
 
 // SyncMode selects how often the log calls fsync.
@@ -20,16 +20,17 @@ type SyncMode string
 const (
 	// SyncAlways fsyncs once per record. Durable per write, slow.
 	SyncAlways SyncMode = "always"
-	// SyncGroup batches records that arrive within BatchWindow (or up to
-	// BatchMax of them) and fsyncs once for the batch. Callers still block
-	// until that fsync returns, so batching trades latency, not durability.
+	// SyncGroup commits immediately whenever the writer is idle and batches
+	// only the records that pile up behind an fsync already in flight. There
+	// is no fixed delay: batch size grows with load, latency does not. Callers
+	// still block until the fsync covering their record returns, so batching
+	// trades throughput for nothing but a little tail latency under load.
 	SyncGroup SyncMode = "group"
 )
 
 // Defaults for Options.
 const (
 	DefaultSegmentSize = 64 << 20
-	DefaultBatchWindow = 2 * time.Millisecond
 	DefaultBatchMax    = 256
 )
 
@@ -41,9 +42,10 @@ type Options struct {
 	Dir         string
 	Sync        SyncMode
 	SegmentSize int64
-	BatchWindow time.Duration
-	BatchMax    int
-	Logger      *log.Logger
+	// BatchMax caps how many records one fsync may cover. It bounds the worst
+	// case a single caller can wait behind, nothing more.
+	BatchMax int
+	Logger   *log.Logger
 }
 
 func (o *Options) withDefaults() {
@@ -52,9 +54,6 @@ func (o *Options) withDefaults() {
 	}
 	if o.SegmentSize <= 0 {
 		o.SegmentSize = DefaultSegmentSize
-	}
-	if o.BatchWindow <= 0 {
-		o.BatchWindow = DefaultBatchWindow
 	}
 	if o.BatchMax <= 0 {
 		o.BatchMax = DefaultBatchMax
@@ -70,11 +69,24 @@ type appendReq struct {
 	done    chan error
 }
 
+// Stats counts what the writer has done. Batches is the number of fsyncs, so
+// Appends/Batches is the average group size and is the single number that says
+// whether group commit is earning its keep.
+type Stats struct {
+	Appends uint64
+	Batches uint64
+	Bytes   uint64
+}
+
 // Log is an append-only write-ahead log over rotating segment files.
 type Log struct {
 	opts Options
 	reqs chan *appendReq
 	wg   sync.WaitGroup
+
+	appends atomic.Uint64
+	batches atomic.Uint64
+	bytes   atomic.Uint64
 
 	mu     sync.RWMutex
 	closed bool
@@ -183,16 +195,19 @@ func (l *Log) Close() error {
 // run is the single writer goroutine. It owns the file handle, so appends
 // never contend on a mutex for the file itself, and it is the only place an
 // fsync is issued.
+//
+// The batching rule is: never wait. Take whatever is queued right now, commit
+// it, and take whatever queued up while that fsync was running. An idle writer
+// therefore syncs a single record with no added delay, and a busy one folds
+// everything that arrived during the previous sync into one sync. Batch size
+// tracks load automatically, which a fixed collection window does not: a
+// window that is short enough not to hurt a lone producer is too short to
+// batch anything useful, and a window long enough to batch is pure latency
+// when there is nobody to batch with.
 func (l *Log) run() {
 	defer l.wg.Done()
 
 	batch := make([]*appendReq, 0, l.opts.BatchMax)
-	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	defer timer.Stop()
-
 	for {
 		first, ok := <-l.reqs
 		if !ok {
@@ -202,24 +217,18 @@ func (l *Log) run() {
 		closing := false
 
 		if l.opts.Sync == SyncGroup {
-			fired := false
-			timer.Reset(l.opts.BatchWindow)
-		collect:
+		drain:
 			for len(batch) < l.opts.BatchMax {
 				select {
 				case req, ok := <-l.reqs:
 					if !ok {
 						closing = true
-						break collect
+						break drain
 					}
 					batch = append(batch, req)
-				case <-timer.C:
-					fired = true
-					break collect
+				default:
+					break drain
 				}
-			}
-			if !fired && !timer.Stop() {
-				<-timer.C
 			}
 		}
 
@@ -267,7 +276,19 @@ func (l *Log) commit(batch []*appendReq) {
 		return
 	}
 	l.size += total
+	l.appends.Add(uint64(len(batch)))
+	l.batches.Add(1)
+	l.bytes.Add(uint64(total))
 	reply(batch, nil)
+}
+
+// Stats is safe to call from any goroutine.
+func (l *Log) Stats() Stats {
+	return Stats{
+		Appends: l.appends.Load(),
+		Batches: l.batches.Load(),
+		Bytes:   l.bytes.Load(),
+	}
 }
 
 func (l *Log) rotate() error {
