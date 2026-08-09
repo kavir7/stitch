@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kavir7/stitch/internal/queue"
+	"github.com/kavir7/stitch/web"
 )
 
 const (
@@ -57,6 +58,7 @@ func New(mgr *queue.Manager, opts Options) *Server {
 	s.mux.HandleFunc("POST /queues/{q}/messages/dequeue", s.dequeue)
 	s.mux.HandleFunc("POST /queues/{q}/messages/{id}/ack", s.ack)
 	s.mux.HandleFunc("POST /queues/{q}/messages/{id}/nack", s.nack)
+	s.mux.HandleFunc("GET /{$}", s.dashboard)
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.mux.HandleFunc("GET /metrics", s.metrics)
 	if opts.UnsafeDemo {
@@ -257,6 +259,12 @@ func (s *Server) nack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// dashboard serves the demo page, which is compiled into the binary.
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(web.Index)
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {

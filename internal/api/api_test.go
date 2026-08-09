@@ -497,3 +497,24 @@ func TestConcurrentProducersAndConsumersOverHTTP(t *testing.T) {
 		t.Fatalf("server counted %d acks, client counted %d", st.Acked, total)
 	}
 }
+
+func TestDashboardIsServedFromTheBinary(t *testing.T) {
+	s := newTestServer(t)
+	rec := do(t, s, "GET", "/", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / returned %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("dashboard content type is %q", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"<title>stitch</title>", "/debug/crash", "messages/dequeue"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the embedded dashboard is missing %q", want)
+		}
+	}
+	// A path that is not the root must not fall through to the dashboard.
+	if rec := do(t, s, "GET", "/nope", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /nope returned %d, want 404", rec.Code)
+	}
+}
