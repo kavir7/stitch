@@ -21,3 +21,8 @@ clean:
 
 crash-test:
 	bash scripts/crash_test.sh
+
+.PHONY: bench
+
+bench:
+	bash scripts/bench.sh
