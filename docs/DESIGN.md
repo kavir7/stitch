@@ -298,17 +298,19 @@ restart it, delete the directory. There is no cluster to bootstrap.
 The second thing is composable ordering. Priority, LIFO and delay are three
 independent switches on one comparator, so a delayed priority LIFO queue is a
 configuration rather than a feature request. The incumbents each cover part of
-this, and to my knowledge none exposes all three as orthogonal options on one
-queue, but I would verify the specifics before repeating them in an interview:
+this, and none of them exposes all three as orthogonal options on a single
+queue:
 
-- SQS has delay queues and message timers, and I believe it has no priority
-  ordering in either standard or FIFO queues. Worth confirming.
-- RabbitMQ supports priority queues via `x-max-priority`. My understanding is
-  that priority interacts badly with consumer prefetch, because messages already
-  pushed to a consumer are not reordered when something more urgent arrives.
-  Confirm the current behaviour before relying on it.
-- Pulsar has delayed and scheduled delivery. I am not confident about its
-  priority story and would check rather than assert.
+- SQS has no in-queue priority. AWS's own guidance is to use separate queues
+  per priority level and poll them in order, which pushes the ordering logic
+  into every consumer. It does have per-message delay timers.
+- RabbitMQ does support message priority: `x-max-priority` on classic queues,
+  and 32 fixed levels on quorum queues. The caveat is real though. Priority is
+  subject to consumer prefetch, so messages already pushed to a consumer are
+  not reordered when something more urgent arrives, and the documented fix is a
+  prefetch of 1, which costs throughput.
+- Pulsar has delayed and scheduled delivery. I did not find a per-message
+  priority equivalent and would not claim one without checking further.
 
 The third thing is that the durability contract is small enough to state in one
 sentence and verify in one script, which is worth something when the reason you
