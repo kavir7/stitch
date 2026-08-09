@@ -20,7 +20,6 @@ const (
 	RecordLeaseExpire
 	RecordDLQMove
 	RecordQueueCreate
-	RecordCheckpoint
 )
 
 func (t RecordType) String() string {
@@ -39,15 +38,13 @@ func (t RecordType) String() string {
 		return "DLQ_MOVE"
 	case RecordQueueCreate:
 		return "QUEUE_CREATE"
-	case RecordCheckpoint:
-		return "CHECKPOINT"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", uint8(t))
 	}
 }
 
 func (t RecordType) valid() bool {
-	return t >= RecordEnqueue && t <= RecordCheckpoint
+	return t >= RecordEnqueue && t <= RecordQueueCreate
 }
 
 // Record is one framed entry in the log.
