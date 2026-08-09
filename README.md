@@ -241,6 +241,20 @@ ambiguous is 100,000. The 205 redeliveries are the leases that were open at the
 instant of the kill, handed back out because a lease is a promise to a
 connection that no longer exists.
 
+One thing this test does not prove, and I would rather say so than let it be
+discovered: `kill -9` does not test the fsync. It kills the process, but every
+`write` is already in the kernel page cache and the kernel is still running, so
+the data survives whether or not it was synced. I checked by deleting the
+`Sync` call and running the crash test again, and it still passed. What this
+test actually proves is the ordering: that a record is written before its
+operation is acknowledged, that recovery folds the log back into the same
+state, and that a torn tail is truncated rather than loaded. Proving the fsync
+itself needs power loss or a block layer that can drop unsynced writes, neither
+of which a test on a laptop can produce. The invariant that the response comes
+after the `Sync` call returns is enforced by the structure of the writer, in
+`commit`, where the batch is only released after the sync: it is not something
+the test suite can catch a regression in.
+
 ## What surprised me
 
 I built group commit the way I had planned it: collect records arriving within

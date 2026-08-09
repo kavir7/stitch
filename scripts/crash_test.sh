@@ -71,12 +71,16 @@ ACKED_AT_KILL=$(wc -l <"$OUT/acked.ids" | tr -d ' ')
 echo "SIGKILL to pid $FIRST_PID (about $ACKED_AT_KILL acks confirmed so far)"
 kill -9 "$FIRST_PID"
 
+# Reap it and check how it died. 137 is 128 + SIGKILL, so this fails loudly if
+# the server ever gets a chance to shut down cleanly instead.
+wait "$FIRST_PID"
+SERVER_STATUS=$?
 wait "$LOAD_PID"
-if kill -0 "$FIRST_PID" 2>/dev/null; then
-  echo "FAIL: the server survived kill -9, which should not be possible"
+if [ "$SERVER_STATUS" -ne 137 ]; then
+  echo "FAIL: the server exited with status $SERVER_STATUS, not 137, so it was not killed by SIGKILL"
   exit 1
 fi
-echo "server is dead; restarting on the same log"
+echo "server died by SIGKILL (exit 137); restarting on the same log"
 
 RESTART_START=$(date +%s)
 start_server "$OUT/server-after.log"
