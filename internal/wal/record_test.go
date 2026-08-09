@@ -12,7 +12,7 @@ func TestRecordRoundTrip(t *testing.T) {
 		typ     RecordType
 		payload []byte
 	}{
-		{"empty payload", RecordCheckpoint, []byte{}},
+		{"empty payload", RecordQueueCreate, []byte{}},
 		{"small", RecordEnqueue, []byte("hello")},
 		{"binary with nulls", RecordLease, []byte{0, 1, 2, 0, 0, 255, 0}},
 		{"large", RecordAck, bytes.Repeat([]byte("x"), 100000)},
@@ -49,7 +49,7 @@ func TestRecordRoundTripSequence(t *testing.T) {
 	payloads := [][]byte{[]byte("a"), {}, []byte("ccc"), bytes.Repeat([]byte("d"), 5000)}
 	var buf []byte
 	for i, p := range payloads {
-		buf = appendRecord(buf, RecordType(i%8+1), p)
+		buf = appendRecord(buf, RecordType(i%7+1), p)
 	}
 
 	off := 0
@@ -58,7 +58,7 @@ func TestRecordRoundTripSequence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("record %d: %v", i, err)
 		}
-		if rec.Type != RecordType(i%8+1) {
+		if rec.Type != RecordType(i%7+1) {
 			t.Fatalf("record %d: type %v", i, rec.Type)
 		}
 		if !bytes.Equal(rec.Payload, want) {
