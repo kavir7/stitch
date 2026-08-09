@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stitch</title>
+<style>
+  :root {
+    --bg: #11131a;
+    --panel: #181b24;
+    --line: #262b38;
+    --text: #e6e8ee;
+    --dim: #8b93a7;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --accent: #7dd3fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 18px; margin: 0; letter-spacing: 0.5px; }
+  h2 { font-size: 12px; margin: 0 0 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .sub { color: var(--dim); font-size: 12px; }
+  .pill { margin-left: auto; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+  .pill.up { color: var(--ok); border-color: #1c4b32; }
+  .pill.down { color: var(--bad); border-color: #4b1c1c; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .card .n { font-size: 26px; font-variant-numeric: tabular-nums; }
+  .card .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+  .good { color: var(--ok); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  label { display: block; margin-bottom: 10px; font-size: 12px; color: var(--dim); }
+  label span { color: var(--text); float: right; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 6px 8px; background: #0d0f15; color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; font: inherit;
+  }
+  button {
+    padding: 8px 14px; border-radius: 4px; border: 1px solid var(--line);
+    background: #222735; color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: #3b455e; }
+  button.on { background: #14351f; border-color: #1c4b32; color: var(--ok); }
+  button.danger { background: #2a1414; border-color: #4b1c1c; color: var(--bad); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  #log { height: 150px; overflow-y: auto; font-size: 12px; color: var(--dim); white-space: pre-wrap; }
+  #log b { color: var(--text); font-weight: normal; }
+  .banner { border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: none; }
+  .banner.show { display: block; }
+  .banner.ok { background: #0f2a1b; border: 1px solid #1c4b32; }
+  .banner.err { background: #2a1414; border: 1px solid #4b1c1c; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: normal; padding: 4px 8px 4px 0; }
+  td { padding: 3px 8px 3px 0; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>stitch</h1>
+  <div class="sub">durable queue, write-ahead log, group commit</div>
+  <div class="pill" id="status">connecting</div>
+</header>
+
+<div class="banner" id="banner"></div>
+
+<div class="cards">
+  <div class="card"><div class="n" id="c-depth">0</div><div class="k">ready</div></div>
+  <div class="card"><div class="n" id="c-inflight">0</div><div class="k">in flight</div></div>
+  <div class="card"><div class="n" id="c-delayed">0</div><div class="k">delayed</div></div>
+  <div class="card"><div class="n" id="c-dlq">0</div><div class="k">dead letter</div></div>
+  <div class="card"><div class="n good" id="c-lost">0</div><div class="k">lost</div></div>
+  <div class="card"><div class="n" id="c-redeliv">0</div><div class="k">redelivered</div></div>
+</div>
+
+<div class="grid">
+
+  <div class="panel">
+    <h2>queue</h2>
+    <label>name
+      <select id="queue-select"></select>
+    </label>
+    <table>
+      <tr><th>enqueued (confirmed)</th><td id="s-enq">0</td></tr>
+      <tr><th>acked (confirmed)</th><td id="s-ack">0</td></tr>
+      <tr><th>nacked</th><td id="s-nack">0</td></tr>
+      <tr><th>requests lost to a crash</th><td id="s-amb">0</td></tr>
+      <tr><th>records per fsync</th><td id="s-fsync">-</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>producer</h2>
+    <label>rate <span id="v-rate">50</span> msg/s
+      <input type="range" id="rate" min="1" max="500" value="50">
+    </label>
+    <label>priority spread <span id="v-prio">0</span>
+      <input type="range" id="prio" min="0" max="9" value="0">
+    </label>
+    <label>delay <span id="v-delay">0</span> ms
+      <input type="range" id="delay" min="0" max="10000" step="250" value="0">
+    </label>
+    <button id="produce">start producing</button>
+  </div>
+
+  <div class="panel">
+    <h2>worker pool</h2>
+    <label>concurrency <span id="v-conc">4</span>
+      <input type="range" id="conc" min="0" max="32" value="4">
+    </label>
+    <label>failure rate <span id="v-fail">0</span>%
+      <input type="range" id="fail" min="0" max="100" value="0">
+    </label>
+    <div class="sub">workers dequeue in batches of 10, then ack or nack each message.</div>
+    <br>
+    <button id="consume">start workers</button>
+  </div>
+
+  <div class="panel">
+    <h2>chaos</h2>
+    <div class="sub">
+      SIGKILL to the server process. Nothing is flushed and nothing is closed.
+      Restart it with the same data directory and the ledger has to add up:
+      nothing lost, and the leases that were open at the moment of the kill
+      come back around for redelivery.
+    </div>
+    <br>
+    <div class="row">
+      <button class="danger" id="kill">kill server</button>
+      <span class="sub" id="kill-note"></span>
+    </div>
+  </div>
+
+  <div class="panel" style="grid-column: 1 / -1;">
+    <h2>events</h2>
+    <div id="log"></div>
+  </div>
+
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  queue: null,
+  enq: 0,          // enqueues the server confirmed with a 201
+  ack: 0,          // acks the server confirmed with a 204
+  nack: 0,
+  ambiguous: 0,    // requests that never got an answer, almost always a crash
+  redelivered: 0,  // deliveries with attempts >= 2 since the last restart
+  baseline: 0,     // messages already in the queue when this page loaded
+  down: false,
+  producing: false,
+  consuming: false,
+  lastTotal: 0,
+};
+
+function log(msg) {
+  const el = $('log');
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML = `<b>${t}</b>  ${msg}\n` + el.innerHTML;
+  if (el.innerHTML.length > 12000) el.innerHTML = el.innerHTML.slice(0, 12000);
+}
+
+function banner(kind, html) {
+  const el = $('banner');
+  el.className = 'banner show ' + kind;
+  el.innerHTML = html;
+}
+
+// req returns null when the request never got an answer, which is what a
+// SIGKILL looks like from here.
+async function req(method, path, body) {
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: body ? {'Content-Type': 'application/json'} : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 204) return {};
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) return {error: data.error || res.status, status: res.status};
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+// --- queue selection ---
+
+async function loadQueues() {
+  const list = await req('GET', '/queues');
+  if (!list) return null;
+  const sel = $('queue-select');
+  const names = list.map(q => q.name);
+  if (names.length === 0) {
+    await req('POST', '/queues', {
+      name: 'demo', mode: 'fifo', priority: true, delay: true,
+      visibility_timeout_ms: 10000, max_attempts: 3, dlq: true,
+    });
+    log('created queue <b>demo</b> with priority, delay, a 10s visibility timeout and a dead-letter queue');
+    return loadQueues();
+  }
+  if (sel.options.length !== names.length) {
+    sel.innerHTML = names.map(n => `<option>${n}</option>`).join('');
+  }
+  if (!state.queue || !names.includes(state.queue)) state.queue = names[0];
+  sel.value = state.queue;
+  return list;
+}
+
+$('queue-select').onchange = (e) => {
+  state.queue = e.target.value;
+  state.enq = state.ack = state.nack = state.ambiguous = state.redelivered = 0;
+  state.baseline = 0;
+  log(`switched to queue <b>${state.queue}</b>, counters reset`);
+};
+
+// --- polling ---
+
+async function poll() {
+  const list = await loadQueues();
+  if (!list) {
+    if (!state.down) {
+      state.down = true;
+      $('status').className = 'pill down';
+      $('status').textContent = 'server down';
+      log('<b>server stopped answering</b>');
+      banner('err', 'Server is down. Restart it with the same data directory and this page will reconcile what survived.');
+    }
+    return;
+  }
+
+  const st = list.find(q => q.name === state.queue);
+  if (!st) return;
+
+  if (state.down) {
+    state.down = false;
+    state.redelivered = 0;
+    $('status').className = 'pill up';
+    $('status').textContent = 'connected';
+    const lost = lostCount(st);
+    banner(lost === 0 ? 'ok' : 'err',
+      `<b>Server is back.</b> ${lost === 0
+        ? 'Zero acknowledged messages lost. Recovery replayed the log and every open lease is deliverable again.'
+        : lost + ' message(s) unaccounted for.'}`);
+    log(`<b>reconnected</b> after restart, ${st.total} message(s) recovered`);
+  } else if ($('status').className !== 'pill up') {
+    $('status').className = 'pill up';
+    $('status').textContent = 'connected';
+  }
+
+  if (state.baseline === 0 && state.enq === 0 && state.ack === 0) state.baseline = st.total;
+  state.lastTotal = st.total;
+
+  $('c-depth').textContent = st.depth;
+  $('c-inflight').textContent = st.in_flight;
+  $('c-delayed').textContent = st.delayed;
+  $('c-dlq').textContent = st.dlq;
+  $('c-dlq').className = 'n' + (st.dlq > 0 ? ' warn' : '');
+  $('c-redeliv').textContent = state.redelivered;
+
+  const lost = lostCount(st);
+  $('c-lost').textContent = lost;
+  $('c-lost').className = 'n ' + (lost === 0 ? 'good' : 'bad');
+
+  $('s-enq').textContent = state.enq;
+  $('s-ack').textContent = state.ack;
+  $('s-nack').textContent = state.nack;
+  $('s-amb').textContent = state.ambiguous;
+}
+
+// Everything this page confirmed as enqueued is either still on the server or
+// was confirmed as acked. Requests that died with the connection are unknowable
+// and are excluded rather than counted as loss.
+// countAmbiguous only counts requests that were in flight before this page
+// noticed the outage. Once the server is known to be down, a failed request
+// was refused rather than half-applied, so it changes nothing.
+function countAmbiguous() {
+  if (!state.down) state.ambiguous++;
+}
+
+function lostCount(st) {
+  const expected = state.baseline + state.enq;
+  const accounted = state.ack + st.total + state.ambiguous;
+  return Math.max(0, expected - accounted);
+}
+
+async function pollWAL() {
+  try {
+    const res = await fetch('/metrics');
+    const text = await res.text();
+    const m = text.match(/^stitch_wal_records_per_fsync ([\d.]+)/m);
+    if (m) $('s-fsync').textContent = Number(m[1]).toFixed(2);
+  } catch (e) { /* the server is down; poll() already says so */ }
+}
+
+setInterval(poll, 500);
+setInterval(pollWAL, 2000);
+poll();
+pollWAL();
+
+// --- producer ---
+
+for (const [id, out] of [['rate', 'v-rate'], ['prio', 'v-prio'], ['delay', 'v-delay'], ['conc', 'v-conc'], ['fail', 'v-fail']]) {
+  $(id).oninput = () => { $(out).textContent = $(id).value; };
+}
+
+$('produce').onclick = () => {
+  state.producing = !state.producing;
+  $('produce').textContent = state.producing ? 'stop producing' : 'start producing';
+  $('produce').className = state.producing ? 'on' : '';
+  if (state.producing) produceLoop();
+};
+
+async function produceLoop() {
+  let n = 0;
+  while (state.producing) {
+    const rate = Number($('rate').value);
+    const spread = Number($('prio').value);
+    const delay = Number($('delay').value);
+    const burst = Math.max(1, Math.round(rate / 10));
+    const jobs = [];
+    for (let i = 0; i < burst; i++) {
+      jobs.push(req('POST', `/queues/${state.queue}/messages`, {
+        body: `job-${Date.now()}-${n++}`,
+        priority: spread ? Math.floor(Math.random() * (spread + 1)) : 0,
+        delay_ms: delay ? Math.floor(Math.random() * delay) : 0,
+      }));
+    }
+    for (const res of await Promise.all(jobs)) {
+      if (res === null) countAmbiguous();
+      else if (!res.error) state.enq++;
+    }
+    await sleep(100);
+  }
+}
+
+// --- worker pool ---
+
+$('consume').onclick = () => {
+  state.consuming = !state.consuming;
+  $('consume').textContent = state.consuming ? 'stop workers' : 'start workers';
+  $('consume').className = state.consuming ? 'on' : '';
+  if (state.consuming) {
+    for (let i = 0; i < 32; i++) worker(i);
+  }
+};
+
+async function worker(slot) {
+  while (state.consuming) {
+    if (slot >= Number($('conc').value)) { await sleep(250); continue; }
+
+    // A dequeue that is lost in flight leaves the message leased on the
+    // server, so it is still accounted for and is not ambiguous.
+    const res = await req('POST', `/queues/${state.queue}/messages/dequeue?n=10&wait_ms=500`);
+    if (res === null) { await sleep(500); continue; }
+    if (res.error) { await sleep(500); continue; }
+
+    for (const msg of res.messages) {
+      if (msg.attempts >= 2) state.redelivered++;
+      const failing = Math.random() * 100 < Number($('fail').value);
+      const path = `/queues/${state.queue}/messages/${msg.id}/` + (failing ? 'nack' : 'ack');
+      const body = failing
+        ? {lease_token: msg.lease_token, requeue_delay_ms: 500}
+        : {lease_token: msg.lease_token};
+      const out = await req('POST', path, body);
+      if (out === null) countAmbiguous();
+      else if (out.error) { /* the lease moved on; the message is somebody else's now */ }
+      else if (failing) state.nack++;
+      else state.ack++;
+    }
+  }
+}
+
+// --- chaos ---
+
+$('kill').onclick = async () => {
+  log('<b>sending SIGKILL</b> to the server');
+  const res = await req('POST', '/debug/crash');
+  if (res && res.status === 404) {
+    $('kill-note').textContent = 'disabled; restart the server with --unsafe-demo';
+    log('crash endpoint is not routed: the server was started without --unsafe-demo');
+    return;
+  }
+  $('kill-note').textContent = '';
+  banner('err', 'Killed. Restart with the same data directory: <code>make run</code>');
+};
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+</script>
+</body>
+</html>
